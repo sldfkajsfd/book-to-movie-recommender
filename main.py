@@ -10,9 +10,17 @@ def main():
     parser.add_argument("command", choices=["run", "results"])
     parser.add_argument("--model", choices=["tfidf", "minilm", "all"], default="all")
     parser.add_argument("--device", choices=["cpu", "gpu"], default="cpu")
+    parser.add_argument("--cf-percent", type=int, nargs="+", default=[50],
+                        help="CF 반영 비율 (1~100). 여러 값을 주면 같은 후보로 비교")
+    parser.add_argument("--cf-books", type=int, nargs="+", default=[20],
+                        help="추론 책의 최대 수. 여러 값을 주면 비율과 교차 비교")
     parser.add_argument("--data", type=Path, default=ROOT / "data")
     parser.add_argument("--output", type=Path, default=ROOT / "results")
     args = parser.parse_args()
+    if any(not 1 <= percent <= 100 for percent in args.cf_percent):
+        parser.error("--cf-percent에는 1~100 사이의 정수를 지정하세요.")
+    if any(limit < 1 for limit in args.cf_books):
+        parser.error("--cf-books에는 양의 정수를 지정하세요.")
     output = args.output
     if args.command == "results":
         path = output / "metrics.json"
@@ -55,10 +63,12 @@ def main():
     # positive: set the entry to 1 if the user rated the book 4 or 5, for checking which books are contained
     # observed: marks rated books so CF can exclude them from new candidates.
     users, positive, observed = book_preferences(data, book_ids)
-    cf_path = cache / "inferred_books.npz"
-    if not cf_path.exists():
-        sparse.save_npz(cf_path, inferred_books(positive, observed, book_ids))
-    cf = sparse.load_npz(cf_path)
+    cf_paths = {limit: cache / f"inferred_books_{limit}.npz" for limit in args.cf_books}
+    missing = [limit for limit, path in cf_paths.items() if not path.exists()]
+    if missing:
+        for limit, weights in inferred_books(positive, observed, book_ids, missing).items():
+            sparse.save_npz(cf_paths[limit], weights)
+    cf_by_limit = {limit: sparse.load_npz(path) for limit, path in cf_paths.items()}
     aliases, _, _ = build_aliases(data / "movies_tfidf_metadata.jsonl")
     all_metrics = {}
     if (output / "metrics.json").exists():
@@ -80,12 +90,20 @@ def main():
                 marker.write_text(json.dumps(model_signature), encoding="utf-8")
             books = np.load(cache / "books_minilm.npy", mmap_mode="r")
             movies = np.load(cache / "movies_minilm.npy", mmap_mode="r")
-        for use_cf in (False, True):
-            name = representation + ("_hybrid" if use_cf else "")
+        variants = [(representation, 0, 0)]
+        for percent in dict.fromkeys(args.cf_percent):
+            for limit in cf_paths:
+                suffix = "_hybrid" if (percent, limit) == (50, 20) else f"_hybrid_cf{percent}_books{limit}"
+                variants.append((representation + suffix, percent, limit))
+        for name, percent, limit in variants:
             path = output / f"{name}_recommendations.csv"
             active_users = recommend(users, positive, books, movie_ids, movies, aliases, path,
-                                     inferred=cf if use_cf else None)
-            all_metrics[name] = evaluate(data, path, active_users, aliases)
+                                     inferred=cf_by_limit.get(limit), cf_weight=percent / 100)
+            all_metrics[name] = {
+                "cf_percent": percent,
+                "cf_books": limit,
+                **evaluate(data, path, active_users, aliases),
+            }
             (output / "metrics.json").write_text(json.dumps(all_metrics, indent=2), encoding="utf-8")
             print(name, all_metrics[name], flush=True)
         del books, movies

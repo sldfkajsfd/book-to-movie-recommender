@@ -1,18 +1,23 @@
-"""Book-only user KNN: 100 neighbors, 20 unseen books, equal profile blend."""
+# 사용자가 평가한 책만으로 취향을 판단하는 로직인 content_based의 한계를 보완하여 Hybrid 방법을 구현한다.
+#
+
 import numpy as np
 from scipy import sparse
 from sklearn.preprocessing import normalize
 from .data import select_top_k
 
 
-def inferred_books(positive, observed, book_ids, neighbors=100, limit=20):
+def inferred_books(positive, observed, book_ids, book_limits=(20,), neighbors=100):
+    """Score unseen books once, then build weights for each requested cutoff."""
+    book_limits = tuple(dict.fromkeys(book_limits))
+    max_books = max(book_limits)
     source = positive
     transpose = source.T.tocsr()
     norms = np.sqrt(np.asarray(source.multiply(source).sum(axis=1)).ravel())
     user_ranks = np.arange(source.shape[0])
     book_ranks = np.empty(len(book_ids), dtype=np.int32)
     book_ranks[np.argsort(book_ids)] = np.arange(len(book_ids))
-    out_rows, out_cols, out_values = [], [], []
+    weights_by_limit = {limit: ([], [], []) for limit in book_limits}
     for start in range(0, source.shape[0], 128):
         similarities = (source[start:start+128] @ transpose).tocsr()
         for local in range(similarities.shape[0]):
@@ -32,23 +37,32 @@ def inferred_books(positive, observed, book_ids, neighbors=100, limit=20):
             scores = (weights @ source).tocsr()
             scores -= scores.multiply(observed[user])
             scores.eliminate_zeros()
-            chosen, values, _, _ = select_top_k(scores.indices, scores.data, book_ranks, limit)
+            chosen, values, _, _ = select_top_k(scores.indices, scores.data, book_ranks, max_books)
             if len(chosen):
-                out_rows.extend([user] * len(chosen)); out_cols.extend(chosen)
-                total = np.pad(values, (0, limit - len(values))).sum()
-                out_values.extend(values / total)
+                for limit, (rows, cols, weights) in weights_by_limit.items():
+                    selected = chosen[:limit]
+                    selected_scores = values[:limit]
+                    total = np.pad(selected_scores, (0, limit - len(selected))).sum()
+                    rows.extend([user] * len(selected))
+                    cols.extend(selected)
+                    weights.extend(selected_scores / total)
         if start % 2048 == 0:
             print(f"CF: {start}/{source.shape[0]}", flush=True)
-    return sparse.csr_matrix((np.asarray(out_values, dtype=np.float32), (out_rows, out_cols)),
-                             shape=source.shape)
+    return {
+        limit: sparse.csr_matrix((np.asarray(weights, dtype=np.float32), (rows, cols)),
+                                 shape=source.shape)
+        for limit, (rows, cols, weights) in weights_by_limit.items()
+    }
 
 
-def mix_profiles(direct, inferred, book_vectors):
+def mix_profiles(direct, inferred, book_vectors, cf_weight=.5):
+    if not 0 <= cf_weight <= 1:
+        raise ValueError("CF weight must be between 0 and 1")
     available = np.diff(inferred.indptr) > 0
-    if not available.any():
+    if cf_weight == 0 or not available.any():
         return direct.copy()
     additional = normalize(inferred[available] @ book_vectors, copy=False)
-    combined = normalize(.5 * direct[available] + .5 * additional, copy=False)
+    combined = normalize((1 - cf_weight) * direct[available] + cf_weight * additional, copy=False)
     if sparse.issparse(direct):
         result = direct.tolil()
         result[available] = combined

@@ -30,6 +30,18 @@ python -X utf8 main.py results
 
 각 run은 Content-based와 Hybrid를 함께 실행한다. --model all은 네 모델을 실행한다. --data와 --output으로 경로를 지정할 수 있다. MiniLM만 실행해도 공통 비교 후보를 만들기 위한 TF-IDF와 CF를 먼저 준비한다. 기존 캐시가 있으면 재사용하며, 입력이나 코드가 달라지면 새 --output을 지정해야 한다.
 
+## Hybrid 비교 실험
+
+CF 비중과 추론 책 수를 비교하려면 한 번의 실행에 값을 함께 지정한다.
+
+```text
+python -X utf8 main.py run --model tfidf --cf-percent 50 20 --cf-books 20 50 --output results_ablation
+```
+
+Content-based 하나와 Hybrid 네 조합을 평가한다. 비중은 직접 취향과 CF 취향 중 CF가 차지하는 비율이며, 책 수는 최대값이다. 같은 이웃 점수와 책 순위를 사용해 두 책 수를 비교한다. `metrics.json`에 비중과 책 수가 함께 저장된다. MiniLM을 별도로 비교하려면 같은 명령에 `--model minilm --device cpu`를 사용한다.
+
+Colab에서는 프로젝트의 소스와 `data/`를 런타임에 준비하고 위 명령을 실행한다. TF-IDF, 책 CF, 추천 점수와 평가 지표 계산은 CPU에서 수행한다. Colab의 시스템 RAM이 이 단계의 메모리 한도를 정한다. MiniLM을 실행할 때는 `models/minilm/`과 해당 실행 패키지도 필요하다. 현재 `--device gpu`는 Intel OpenVINO 전용이다.
+
 ## 저장되는 것
 
 - results/\*\_recommendations.csv: 모델별 추천
@@ -40,7 +52,7 @@ python -X utf8 main.py results
 
 ## 모델 조건
 
-20만 TF-IDF, unigram+bigram, 책 전용 사전·IDF, 4~5점 책 동일 비중, 코사인 Top 10. 20만 사전으로 변환한 벡터가 0이 아닌 책과 영화를 공통 작품 목록으로 사용한다. CF는 이 책 목록에서 최대 100명 이웃과 미평가 책 20권을 사용하며, 직접 취향과 50:50으로 결합한다. CF가 불가능하면 직접 취향을 그대로 사용한다. MiniLM도 공통 작품 목록을 사용한다. 영화 평점은 평가만 담당한다.
+20만 TF-IDF, unigram+bigram, 책 전용 사전·IDF, 4~5점 책 동일 비중, 코사인 Top 10. 20만 사전으로 변환한 벡터가 0이 아닌 책과 영화를 공통 작품 목록으로 사용한다. CF는 이 책 목록에서 최대 100명 이웃을 사용한다. 기본값은 미평가 책 최대 20권과 직접 취향 대 CF 취향 50:50이다. CF가 불가능하면 직접 취향을 그대로 사용한다. MiniLM도 공통 작품 목록을 사용한다. 영화 평점은 평가만 담당한다.
 
 ## 검증 범위
 

@@ -1,4 +1,7 @@
-"""Equal-weight positive-book profiles and unique-work cosine Top 10."""
+
+# 사용자가 좋아한 책들의 특징들을 평균화 후 정규화를 통해 하나의 벡터로 나타내어, 프로필을 생성하는 단계이다.
+# 평점 5점과 4점은 동일한 가중치로 반영하며, 그 이하 평점들은 제외한다.
+
 import csv
 import numpy as np
 from scipy import sparse
@@ -8,7 +11,7 @@ from .data import select_top_k
 from .hybrid import mix_profiles
 
 
-def recommend(users, positive, books, movie_ids, movies, aliases, path, inferred=None, k=10):
+def recommend(users, positive, books, movie_ids, movies, aliases, path, inferred=None, k=10, cf_weight=.5):
     counts = np.asarray(positive.sum(axis=1)).ravel()
     eligible = np.flatnonzero(counts > 0)
     ranks = np.empty(len(movie_ids), dtype=np.int32)
@@ -23,7 +26,7 @@ def recommend(users, positive, books, movie_ids, movies, aliases, path, inferred
             weights = positive[rows].multiply((1 / counts[rows]).astype(np.float32)[:, None]).tocsr()
             profiles = normalize(weights @ books, copy=False)
             if inferred is not None:
-                profiles = mix_profiles(profiles, inferred[rows], books)
+                profiles = mix_profiles(profiles, inferred[rows], books, cf_weight)
             scores = profiles @ transposed
             for local, user in enumerate(rows):
                 if sparse.issparse(scores):
