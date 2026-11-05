@@ -8,7 +8,6 @@ ROOT = Path(__file__).resolve().parent
 def main():
     parser = argparse.ArgumentParser(description="책 취향 기반 영화 추천")
     parser.add_argument("command", choices=["run", "results"])
-    parser.add_argument("--reference", action="store_true", help="Show historical report metrics with results")
     parser.add_argument("--model", choices=["tfidf", "minilm", "all"], default="all")
     parser.add_argument("--device", choices=["cpu", "gpu"], default="cpu")
     parser.add_argument("--data", type=Path, default=ROOT / "data")
@@ -16,9 +15,9 @@ def main():
     args = parser.parse_args()
     output = args.output
     if args.command == "results":
-        path = ROOT / "reference_metrics.json" if args.reference else output / "metrics.json"
+        path = output / "metrics.json"
         if not path.exists():
-            parser.error("결과가 없습니다. 먼저 run을 실행하세요. 기존 보고서 수치는 reference_metrics.json에 있습니다.")
+            parser.error("결과가 없습니다. 먼저 run을 실행하세요.")
         print(path.read_text(encoding="utf-8"))
         return
     import numpy as np
@@ -27,11 +26,9 @@ def main():
     from src.features import build_tfidf, build_minilm
     from src.editions import build_aliases
     from src.hybrid import inferred_books
-    from src.recommendation import recommend
+    from src.content_based import recommend
     from src.evaluation import evaluate
 
-    if args.reference:
-        parser.error("--reference is only available with results")
     output.mkdir(parents=True, exist_ok=True)
     cache = output / "cache"
     cache.mkdir(exist_ok=True)
@@ -51,7 +48,7 @@ def main():
         build_tfidf(data, cache, json.loads(stop_path.read_text(encoding="utf-8")))
         (cache / "tfidf_complete.json").write_text("{}", encoding="utf-8")
     with np.load(cache / "catalog.npz") as catalog:
-        book_ids, movie_ids, cf_mask = (catalog[k] for k in ["book_ids", "movie_ids", "cf_book_mask"])
+        book_ids, movie_ids = catalog["book_ids"], catalog["movie_ids"]
 
 
     # Build two tables with users as rows and books as columns.
@@ -60,7 +57,7 @@ def main():
     users, positive, observed = book_preferences(data, book_ids)
     cf_path = cache / "inferred_books.npz"
     if not cf_path.exists():
-        sparse.save_npz(cf_path, inferred_books(positive, observed, book_ids, cf_mask))
+        sparse.save_npz(cf_path, inferred_books(positive, observed, book_ids))
     cf = sparse.load_npz(cf_path)
     aliases, _, _ = build_aliases(data / "movies_tfidf_metadata.jsonl")
     all_metrics = {}

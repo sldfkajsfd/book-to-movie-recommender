@@ -1,4 +1,12 @@
-"""Book-only TF-IDF and the fixed MiniLM text encoder."""
+# 책과 영화를 비교할 수 있는 형태로 바꾸는  부분이다.
+# 텍스트 -> 숫자 벡터로 변환하는 과정을 거친다.
+# 텍스트들의 중요도(등장 여부)로 표현하여  TF-IDF / 텍스트의 문백을 파악하여 임베딩하는 MiniLM 두가지 방법을 이용한다.
+# 해당 방법들을 독립적으로 사용하는 근거는 보고서에 기입되어 있다.
+# TF-IDF : 구현 조건은 보고서에 기입되어 있으며, 단어 사전 및 IDF 학습에 책, 영화 모두 동일한 좌표계 공유를 위하여 책 메타데이터만 사용되었다.
+# MiniLM : 사전학습된 Transformer 모델을 이용하여 텍스트의 문맥 정보를 좌표계로 나타낸다.
+# 해당 모델의 경우 직접 학습하지 않고 오픈 소스 모델인 `sentence-transformers/all-MiniLM-L6-v2`을 사용하였다.
+
+
 from collections import Counter
 from pathlib import Path
 import sqlite3
@@ -188,7 +196,7 @@ class Encoder:
 
 
 def build_tfidf(data, output, stopwords, max_features=200000, min_df=2):
-    """Fit on Books only; retain the original 50k candidate mask for comparison."""
+    """Fit on books and retain nonzero rows for the shared catalog."""
     settings = dict(min_df=min_df, max_df=.95, max_features=max_features)
     vectorizer = TfidfVectorizer(ngram_range=(1, 2), stop_words=stopwords,
                                 dtype=np.float32, norm="l2")
@@ -200,18 +208,14 @@ def build_tfidf(data, output, stopwords, max_features=200000, min_df=2):
     books = vectorizer.fit_transform(text for _, _, text in validated_records(data / "books_tfidf_metadata.jsonl"))
     movies = batched_transform(vectorizer,
         (text for _, _, text in validated_records(data / "movies_tfidf_metadata.jsonl")), 2048)
-    # The baseline 50k mask defines the same CF books and movie candidates as the study.
-    baseline = sorted(selected, key=lambda r: (-r[1], r[0]))[:min(50000, max_features)]
-    columns = [vocabulary[t] for t, _, _ in baseline]
-    book_baseline = np.asarray(books[:, columns].getnnz(axis=1)).ravel() > 0
-    movie_keep = np.asarray(movies[:, columns].getnnz(axis=1)).ravel() > 0
+    movie_keep = np.asarray(movies.getnnz(axis=1)).ravel() > 0
     book_keep = np.asarray(books.getnnz(axis=1)).ravel() > 0
     book_ids = np.array([r["work_id"] for r in iter_metadata(data / "books_tfidf_metadata.jsonl")])
     movie_ids = np.array([r["work_id"] for r in iter_metadata(data / "movies_tfidf_metadata.jsonl")])
     sparse.save_npz(output / "books_tfidf.npz", books[book_keep])
     sparse.save_npz(output / "movies_tfidf.npz", movies[movie_keep])
     np.savez_compressed(output / "catalog.npz", book_ids=book_ids[book_keep],
-        movie_ids=movie_ids[movie_keep], cf_book_mask=book_baseline[book_keep])
+        movie_ids=movie_ids[movie_keep])
     joblib.dump(vectorizer, output / "tfidf.joblib")
 
 

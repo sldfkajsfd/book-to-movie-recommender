@@ -5,10 +5,8 @@ from sklearn.preprocessing import normalize
 from .data import select_top_k
 
 
-def inferred_books(positive, observed, book_ids, cf_mask, neighbors=100, limit=20):
-    # Keep the original baseline book population for CF, mapped to current book rows.
-    source = positive.multiply(cf_mask).tocsr()
-    source.eliminate_zeros()
+def inferred_books(positive, observed, book_ids, neighbors=100, limit=20):
+    source = positive
     transpose = source.T.tocsr()
     norms = np.sqrt(np.asarray(source.multiply(source).sum(axis=1)).ravel())
     user_ranks = np.arange(source.shape[0])
