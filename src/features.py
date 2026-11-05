@@ -119,20 +119,23 @@ def batched_transform(vectorizer, texts, batch_size):
     return sparse.vstack(matrices, format="csr", dtype=np.float32)
 
 class Encoder:
-    def __init__(self, threads, device):
+    def __init__(self, threads, device, model_dir=MODEL, batch_size=None, profile_prefix=None):
+        model_dir = Path(model_dir)
         os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
         from tokenizers import Tokenizer
 
-        self.tokenizer = Tokenizer.from_file(str(MODEL / "tokenizer.json"))
+        self.tokenizer = Tokenizer.from_file(str(model_dir / "tokenizer.json"))
         self.tokenizer.no_padding()
         self.tokenizer.enable_truncation(max_length=MAX_LENGTH)
         self.device = device
-        self.batch_size = 1 if device == "cpu_fp32" else BATCH
+        self.batch_size = batch_size if batch_size is not None else (1 if device == "cpu_fp32" else BATCH)
+        if self.batch_size < 1:
+            raise ValueError("MiniLM batch size must be positive")
         if device == "gpu":
             import openvino as ov
             from openvino import opset13 as ops
 
-            self.model_path = MODEL / "model.onnx"
+            self.model_path = model_dir / "model.onnx"
             core = ov.Core()
             graph = core.read_model(self.model_path)
             mask_port = graph.input("attention_mask")
@@ -148,7 +151,7 @@ class Encoder:
         else:
             import onnxruntime as ort
 
-            self.model_path = MODEL / ("model.onnx" if device == "cpu_fp32" else "model_quint8_avx2.onnx")
+            self.model_path = model_dir / ("model.onnx" if device in {"cuda", "cpu_fp32"} else "model_quint8_avx2.onnx")
             options = ort.SessionOptions()
             options.intra_op_num_threads = threads
             options.inter_op_num_threads = 1
@@ -156,10 +159,25 @@ class Encoder:
                 options.enable_cpu_mem_arena = False
                 options.enable_mem_pattern = False
                 options.intra_op_num_threads = min(threads, 2)
+            providers = ["CPUExecutionProvider"]
+            if device == "cuda":
+                if "CUDAExecutionProvider" not in ort.get_available_providers():
+                    raise RuntimeError("CUDAExecutionProvider unavailable. Install onnxruntime-gpu and enable NVIDIA GPU.")
+                ort.preload_dlls(msvc=os.name == "nt")
+                # Disable TF32 so FP32 CPU/CUDA comparisons use the same precision.
+                providers = [("CUDAExecutionProvider", {"use_tf32": "0"})]
+                if profile_prefix is not None:
+                    options.enable_profiling = True
+                    options.profile_file_prefix = str(profile_prefix)
             self.session = ort.InferenceSession(str(self.model_path),
-                sess_options=options, providers=["CPUExecutionProvider"])
+                sess_options=options, providers=providers)
+            if device == "cuda":
+                if self.session.get_providers()[0] != "CUDAExecutionProvider":
+                    raise RuntimeError("CUDA session initialization failed. Check the NVIDIA driver, CUDA and cuDNN.")
+                self.session.disable_fallback()
             self.inputs = {value.name for value in self.session.get_inputs()}
-            self.backend = ("ONNX Runtime CPU, official FP32 ONNX" if device == "cpu_fp32"
+            self.backend = ("ONNX Runtime CUDA, official FP32 ONNX" if device == "cuda" else
+                            "ONNX Runtime CPU, official FP32 ONNX" if device == "cpu_fp32"
                             else "ONNX Runtime CPU, official AVX2 UINT8 weights")
             self.runtime_version = ort.__version__
 
@@ -219,8 +237,10 @@ def build_tfidf(data, output, stopwords, max_features=200000, min_df=2):
     joblib.dump(vectorizer, output / "tfidf.joblib")
 
 
-def build_minilm(data, output, device):
-    encoder = Encoder(4, device)
+def build_minilm(data, output, device, model_dir=MODEL, batch_size=None):
+    encoder = Encoder(4, device, model_dir, batch_size)
+    print(f"MiniLM: {encoder.backend}, batch={encoder.batch_size}, ORT/OpenVINO={encoder.runtime_version}",
+          flush=True)
     with np.load(output / "catalog.npz") as catalog:
         maps = {domain: catalog[key].tolist() for domain, key in
                 [("books", "book_ids"), ("movies", "movie_ids")]}
